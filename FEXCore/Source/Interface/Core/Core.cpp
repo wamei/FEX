@@ -954,6 +954,23 @@ ContextImpl::GenerateIR(FEXCore::Core::InternalThreadState* Thread, uint64_t Gue
         }
       }
 
+#ifdef FEX_IOS_HOST
+      /* madeira-bcd smc-full-rwx: MADEIRA_FEX_SMC_RWX_FULL=1 gives the per-instruction
+       * full SMC check to blocks in writable+executable memory only, instead of
+       * SMCChecks=full for the whole process. The Adventures of Elliot (Denuvo)
+       * needs full checks for the code it generates into RWX memory, but with them
+       * process-wide it compiled ~5,000 blocks a second for minutes and ran at
+       * under 1 fps. */
+      static const bool IosSmcFullRwx = [] {
+        const char* E = getenv("MADEIRA_FEX_SMC_RWX_FULL");
+        return E && E[0] == '1';
+      }();
+      const bool IosFullSMCForBlock = IosSmcFullRwx && Config.SMCChecks != FEXCore::Config::CONFIG_SMC_FULL &&
+                                      SyscallHandler->QueryGuestExecutableRange(Thread, Block.Entry).Writable;
+#else
+      constexpr bool IosFullSMCForBlock = false;
+#endif
+
       // Set the block entry point
       Thread->OpDispatcher->SetNewBlockIfChanged(Block.Entry);
 
@@ -1015,7 +1032,7 @@ ContextImpl::GenerateIR(FEXCore::Core::InternalThreadState* Thread, uint64_t Gue
           Thread->OpDispatcher->_GuestOpcode(InstAddress - GuestRIP);
         }
 
-        if (Config.SMCChecks == FEXCore::Config::CONFIG_SMC_FULL || Block.ForceFullSMCDetection) {
+        if (Config.SMCChecks == FEXCore::Config::CONFIG_SMC_FULL || Block.ForceFullSMCDetection || IosFullSMCForBlock) {
           // Guest window: snapshotting the guest's code bytes is a guest read. The address handed to
           // _ValidateCode below stays guest; DEF_OP(ValidateCode) applies the window itself.
           auto ExistingCodePtr = reinterpret_cast<uint8_t*>(GetGuestBase() + Block.Entry + BlockInstructionsLength);
@@ -2346,6 +2363,15 @@ void ContextImpl::InvalidateThreadCachedCodeRange(FEXCore::Core::InternalThreadS
 }
 
 void ContextImpl::ThreadRemoveCodeEntryFromJit(FEXCore::Core::CpuStateFrame* Frame, uint64_t GuestRIP) {
+#ifdef FEX_IOS_HOST
+  /* madeira-bcd: how often the full SMC check finds changed code (each one drops
+   * the whole page's compiled blocks). */
+  static std::atomic<uint64_t> IosSmcFullHits {0};
+  const auto N = IosSmcFullHits.fetch_add(1, std::memory_order_relaxed) + 1;
+  if (N <= 20 || !(N & 4095)) {
+    LogMan::Msg::EFmt("[smc-full] #{} code changed under the full check at {:#x}: page invalidated", N, GuestRIP);
+  }
+#endif
   static_cast<ContextImpl*>(Frame->Thread->CTX)->SyscallHandler->InvalidateGuestCodeRange(Frame->Thread, GuestRIP, 1);
 }
 
