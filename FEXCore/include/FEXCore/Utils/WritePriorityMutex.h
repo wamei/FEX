@@ -346,6 +346,17 @@ public:
     return reinterpret_cast<uint64_t>(&Futex);
   }
 
+  /* madeira-bcd: does the CALLING thread hold this exclusively? Only the owner can
+   * find its own TEB in OwnerTeb, so the answer is race-free for the caller. */
+  bool IosWriteHeldByThisThread() const {
+#if defined(_WIN32)
+    const uint64_t Teb = IosSelfTeb();
+    return Teb && OwnerTeb == Teb;
+#else
+    return false;
+#endif
+  }
+
 private:
 
 #if defined(__linux__)

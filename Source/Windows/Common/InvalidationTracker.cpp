@@ -769,6 +769,26 @@ ULONG InvalidationTracker::GetUntrapProt(uint64_t Address) const {
 }
 
 void InvalidationTracker::InvalidateIntervalInternal(uint64_t Address, uint64_t Size) {
+#ifdef FEX_IOS_HOST
+  /* madeira-bcd: the IntervalsLock re-entry rule (OwnedSharedMutex) applied to the
+   * code-invalidation lock. Memory FEX allocates or frees for itself while this thread
+   * holds CodeInvalidationMutex exclusively comes back on the same thread through the
+   * memory notifications, and the lock is not recursive: The Adventures of Elliot's
+   * GameThread write-owned it inside InvalidateAlignedInterval and then write-waited on
+   * it from InvalidateAlignedInterval again, and every other thread queued behind it.
+   * The outer invalidation is still running on this thread; the nested range is FEX's
+   * own memory, so it is logged and skipped rather than waited on for ever. */
+  if (CTX.GetCodeInvalidationMutex().IosWriteHeldByThisThread()) {
+    static std::atomic<uint32_t> NestedCodeInvalidations {0};
+    const auto N = NestedCodeInvalidations.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (N <= 20 || !(N & 255)) {
+      LogMan::Msg::EFmt("[fexlock] nested code invalidation #{} {:#x}+{:#x} skipped: this thread already holds "
+                        "CodeInvalidationMutex (ra={})",
+                        N, Address, Size, __builtin_return_address(0));
+    }
+    return;
+  }
+#endif
   std::scoped_lock CodeLock(CTX.GetCodeInvalidationMutex());
   InvalidateIntervalInternalLocked(Address, Size);
 }
