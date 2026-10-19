@@ -61,6 +61,7 @@ $end_info$
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cstdlib>
 #include <chrono>
 #include <cstring>
 
