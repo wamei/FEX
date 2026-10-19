@@ -971,11 +971,14 @@ NTSTATUS ProcessInit() {
   FEX::Windows::Logging::Init();
 
 #ifdef FEX_IOS_HOST
-  /* Recorder emitted only for this executable, before CTX/JIT creation. */
+  /* Recorder emitted only for this executable, before CTX/JIT creation.
+   * MADEIRA_FEX_BRANCH_HISTORY=<name.exe> records that executable instead of
+   * Launcher.exe; "0" turns the recorder off. */
   const auto HistoryName = fextl::string {ExecutableName};
   const char* HistoryOpt = getenv("MADEIRA_FEX_BRANCH_HISTORY");
+  const bool HistoryNamed = HistoryOpt && strchr(HistoryOpt, '.');
   FEXCore::Core::IosGuestBranchTraceEnabled =
-    _stricmp(HistoryName.c_str(), "Launcher.exe") == 0 && !(HistoryOpt && HistoryOpt[0] == '0');
+    _stricmp(HistoryName.c_str(), HistoryNamed ? HistoryOpt : "Launcher.exe") == 0 && !(HistoryOpt && HistoryOpt[0] == '0');
   LogMan::Msg::IFmt("FEX: branch-history-v1 madeira-bcd enabled={} exe={}",
                    FEXCore::Core::IosGuestBranchTraceEnabled != 0, ExecutableName);
 #endif
