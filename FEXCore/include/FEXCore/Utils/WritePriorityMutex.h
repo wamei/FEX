@@ -400,6 +400,14 @@ private:
                       Which, static_cast<void*>(&Futex), Futex, !!(Futex & WRITE_OWNED_BIT), !!(Futex & READ_WAITER_BIT),
                       (Futex & WRITE_WAITER_COUNT_MASK) >> WRITE_WAITER_OFFSET, Futex & READ_OWNER_COUNT_MASK, Expected,
                       OwnerTeb, OwnerTid, OwnerDepth);
+    /* madeira-bcd [fexlock-bt]: where the hold was taken, and where this waiter is */
+    static std::atomic<int> BtDumps {0};
+    if (OwnerTeb && BtDumps.fetch_add(1, std::memory_order_relaxed) < 12) {
+      uint64_t Self[8];
+      IosCaptureBT(Self, 8);
+      IosReportBT(OwnerTeb == IosSelfTeb() ? "owner (SELF: this thread holds it)" : "owner", OwnerBT);
+      IosReportBT(Which, Self);
+    }
     /* ml413: a parked writer means live read holds are the blockers — name them.
      * ml414: dump from READ-wait reports too — ml414 died before any write
      * waiter reached its report and the ring never printed. Global cap keeps
@@ -558,6 +566,42 @@ private:
    * write hold.  Touched only by the owning thread — plain stores suffice. */
   uint32_t OwnerSharedNest {};
 
+  /* madeira-bcd [fexlock-bt]: the return addresses of the write-acquire that
+   * currently holds the lock, walked from the frame-pointer chain. A thread
+   * parked behind its OWN write hold (The Adventures of Elliot: GameThread
+   * write-owned this mutex and then write-waited on it) is only explained by
+   * where the first hold was taken; the waiter prints its own chain next to it.
+   * Addresses are raw: the log's [jit-pool] line for libarm64ecfex.dll gives
+   * the module's base and pool copy to resolve them against. */
+  uint64_t OwnerBT[8] {};
+
+  static void IosCaptureBT(uint64_t* Out, size_t N) {
+    for (size_t i = 0; i < N; i++) {
+      Out[i] = 0;
+    }
+#ifdef ARCHITECTURE_arm64
+    uint64_t Fp = reinterpret_cast<uint64_t>(__builtin_frame_address(0));
+    const uint64_t Start = Fp;
+    for (size_t i = 0; i < N; i++) {
+      if (!Fp || (Fp & 7) || Fp < Start || Fp - Start > (1ULL << 20)) {
+        break;
+      }
+      const uint64_t* Frame = reinterpret_cast<const uint64_t*>(Fp);
+      Out[i] = Frame[1];
+      const uint64_t Next = Frame[0];
+      if (Next <= Fp) {
+        break;
+      }
+      Fp = Next;
+    }
+#endif
+  }
+
+  void IosReportBT(const char* Tag, const uint64_t* BT) {
+    LogMan::Msg::EFmt("[fexlock-bt] {} mutex={} {:x} {:x} {:x} {:x} {:x} {:x} {:x} {:x}", Tag, static_cast<void*>(&Futex), BT[0],
+                      BT[1], BT[2], BT[3], BT[4], BT[5], BT[6], BT[7]);
+  }
+
   void NoteWriteAcquired() {
     uint64_t Teb = 0;
 #ifdef ARCHITECTURE_arm64
@@ -566,6 +610,7 @@ private:
     OwnerTeb = Teb;
     OwnerTid = Teb ? *reinterpret_cast<uint32_t*>(Teb + 0x48) : 0;
     OwnerDepth++;
+    IosCaptureBT(OwnerBT, 8);
   }
 
   void NoteWriteReleased() {
